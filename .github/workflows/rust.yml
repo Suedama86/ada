@@ -1,0 +1,92 @@
+name: Build Tauri App
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - platform: 'macos-latest'
+            rust_target: 'aarch64-apple-darwin'
+          - platform: 'ubuntu-22.04'
+            rust_target: ''
+          - platform: 'windows-latest'
+            rust_target: ''
+
+    runs-on: ${{ matrix.platform }}
+    env:
+      NODE_OPTIONS: "--max-old-space-size=4096"
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js (with npm cache)
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: '**/package-lock.json'
+
+    - name: Cache Cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Setup Rust toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+
+    - name: Add Rust target (if required)
+      if: ${{ matrix.rust_target != '' }}
+      run: rustup target add ${{ matrix.rust_target }}
+
+    - name: Install Linux system deps (only on ubuntu)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          build-essential \
+          libssl-dev \
+          pkg-config \
+          libwebkit2gtk-4.0-dev
+      shell: bash
+
+    - name: Install frontend dependencies
+      run: npm ci
+      shell: bash
+
+    - name: Build Tauri app
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # Kör tauri-bygget. Lägg till target-argument endast om rust_target är satt i matrisen.
+        if [ "${{ matrix.rust_target }}" != "" ]; then
+          npm run tauri build -- --target ${{ matrix.rust_target }}
+        else
+          npm run tauri build
+        fi
+      shell: bash
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: tauri-build-${{ matrix.platform }}
+        path: |
+          src-tauri/target/release/bundle/**
+          target/**
+          dist/**
+          build/**
