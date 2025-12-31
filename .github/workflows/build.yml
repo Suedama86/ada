@@ -5,7 +5,7 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
-  workflow_dispatch:  # Add this line for manual runs
+  workflow_dispatch:
 
 jobs:
   build:
@@ -13,33 +13,85 @@ jobs:
       matrix:
         include:
           - platform: 'macos-latest'
-            args: '--target aarch64-apple-darwin'
+            rust_target: 'aarch64-apple-darwin'
           - platform: 'ubuntu-22.04'
-            args: ''
+            rust_target: ''
           - platform: 'windows-latest'
-            args: ''
+            rust_target: ''
 
     runs-on: ${{ matrix.platform }}
+    env:
+      NODE_OPTIONS: "--max-old-space-size=4096"
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Setup Node.js
+    - name: Setup Node.js (with npm cache)
       uses: actions/setup-node@v4
       with:
         node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: '**/package-lock.json'
+
+    - name: Cache Cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Setup Rust toolchain
+      # actions-rs/toolchain is stable and commonly used; adjust if you prefer another action
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+
+    - name: Add Rust target (if required)
+      if: ${{ matrix.rust_target != '' }}
+      run: rustup target add ${{ matrix.rust_target }}
+
+    - name: Install Linux system deps (Ubuntu only)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          build-essential \
+          libssl-dev \
+          pkg-config \
+          libwebkit2gtk-4.0-dev
+      shell: bash
 
     - name: Install frontend dependencies
-      run: npm install
+      run: npm ci
 
-    - name: Setup Rust
-      uses: dtolnay/rust-toolchain@stable
+    - name: Build frontend (optional step: run if you have a separate build)
+      if: contains(needs, '') == false || true
+      run: |
+        # Om du har ett separat frontend build-skript, anropa det här.
+        # Exempel: npm run build
+        echo "Skipping separate frontend build; running tauri build which usually builds frontend as part of bundling."
+      shell: bash
 
     - name: Build Tauri app
-      uses: tauri-apps/tauri-action@v0
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # Kör tauri-bygget. Anpassa skriptet om ditt package.json använder annat kommando.
+        npm run tauri build ${ { matrix.rust_target && format('--target {0}', matrix.rust_target) } }
+      shell: bash
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
       with:
-        tauriScript: npm run tauri build
-        args: ${{ matrix.args }}
+        name: tauri-build-${{ matrix.platform }}
+        path: |
+          src-tauri/target/**/*.*
+          target/**/*.*
+          dist/**/*
+          build/**/*
